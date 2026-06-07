@@ -564,16 +564,17 @@ function parseHysteria2Uri(uri) {
   const queryText = queryIndex >= 0 ? bodyWithoutHash.slice(queryIndex + 1) : '';
   const authority = authorityAndPath.split('/')[0];
   const atIndex = authority.lastIndexOf('@');
-
-  if (atIndex < 0) {
-    throw new Error('Hysteria2 链接缺少认证密码');
-  }
-
-  const password = decodeComponentSafe(authority.slice(0, atIndex)).trim();
-  const { host: server, portText } = splitHysteria2HostAndPort(authority.slice(atIndex + 1));
-  const { port, ports } = normalizeHysteria2Port(portText);
   const params = Object.fromEntries(new URLSearchParams(queryText).entries());
-  const paramsPorts = String(params.ports || '').trim();
+
+  const rawPassword =
+    atIndex >= 0
+      ? authority.slice(0, atIndex)
+      : firstNonEmpty(params.auth, params.password, params.pass);
+  const serverPart = atIndex >= 0 ? authority.slice(atIndex + 1) : authority;
+  const password = decodeComponentSafe(rawPassword).trim();
+  const { host: server, portText } = splitHysteria2HostAndPort(serverPart);
+  const { port, ports } = normalizeHysteria2Port(portText);
+  const paramsPorts = firstNonEmpty(params.ports, params.mport, params.portHop);
 
   if (!server || !password) {
     throw new Error('Hysteria2 链接缺少主机或认证密码');
@@ -589,18 +590,25 @@ function parseHysteria2Uri(uri) {
     password,
     network: 'udp',
     hostHeader: '',
-    sni: String(params.sni || '').trim(),
+    sni: firstNonEmpty(params.sni, params.peer, params.serverName),
     tls: true,
     security: 'tls',
     alpn: splitListValue(params.alpn),
-    obfs: String(params.obfs || '').trim(),
-    obfsPassword: String(params['obfs-password'] || params.obfsPassword || '').trim(),
+    obfs: firstNonEmpty(params.obfs),
+    obfsPassword: firstNonEmpty(params['obfs-password'], params.obfsPassword, params.obfs_password),
     pinSHA256: String(params.pinSHA256 || '').trim(),
-    fingerprint: String(params.fingerprint || '').trim(),
-    allowInsecure: toBoolean(params.insecure || params.allowInsecure),
-    up: String(params.up || '').trim(),
-    down: String(params.down || '').trim(),
-    hopInterval: String(params['hop-interval'] || params.hopInterval || '').trim(),
+    fingerprint: firstNonEmpty(params.fingerprint, params.fp),
+    allowInsecure: toBoolean(
+      firstNonEmpty(params.insecure, params.allowInsecure, params['skip-cert-verify'], params.skipCertVerify),
+    ),
+    up: firstNonEmpty(params.up, params.upmbps),
+    down: firstNonEmpty(params.down, params.downmbps),
+    hopInterval: firstNonEmpty(
+      params['hop-interval'],
+      params.hopInterval,
+      params.hop_interval,
+      params.mportHopInt,
+    ),
     params,
   };
 }
@@ -875,6 +883,16 @@ function decodeComponentSafe(value) {
   } catch {
     return value;
   }
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) {
+      return text;
+    }
+  }
+  return '';
 }
 
 function normalizePort(value, fallback) {

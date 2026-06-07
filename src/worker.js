@@ -111,16 +111,17 @@ function parseHysteria2(link) {
   const queryText = queryIndex >= 0 ? bodyWithoutHash.slice(queryIndex + 1) : '';
   const authority = authorityAndPath.split('/')[0];
   const atIndex = authority.lastIndexOf('@');
-
-  if (atIndex < 0) {
-    throw new Error('Hysteria2 链接缺少认证密码');
-  }
-
-  const password = decodeComponentSafe(authority.slice(0, atIndex)).trim();
-  const { host: server, portText } = splitHysteria2HostAndPort(authority.slice(atIndex + 1));
-  const { port, ports } = normalizeHysteria2Port(portText);
   const params = Object.fromEntries(new URLSearchParams(queryText).entries());
-  const paramsPorts = String(params.ports || '').trim();
+
+  const rawPassword =
+    atIndex >= 0
+      ? authority.slice(0, atIndex)
+      : firstNonEmpty(params.auth, params.password, params.pass);
+  const serverPart = atIndex >= 0 ? authority.slice(atIndex + 1) : authority;
+  const password = decodeComponentSafe(rawPassword).trim();
+  const { host: server, portText } = splitHysteria2HostAndPort(serverPart);
+  const { port, ports } = normalizeHysteria2Port(portText);
+  const paramsPorts = firstNonEmpty(params.ports, params.mport, params.portHop);
 
   if (!server || !password) {
     throw new Error('Hysteria2 链接缺少主机或认证密码');
@@ -137,16 +138,23 @@ function parseHysteria2(link) {
     tls: true,
     host: '',
     path: '',
-    sni: params.sni || '',
+    sni: firstNonEmpty(params.sni, params.peer, params.serverName),
     alpn: params.alpn || '',
-    obfs: params.obfs || '',
-    obfsPassword: params['obfs-password'] || params.obfsPassword || '',
+    obfs: firstNonEmpty(params.obfs),
+    obfsPassword: firstNonEmpty(params['obfs-password'], params.obfsPassword, params.obfs_password),
     pinSHA256: params.pinSHA256 || '',
-    fingerprint: params.fingerprint || '',
-    allowInsecure: parseBool(params.insecure || params.allowInsecure),
-    up: params.up || '',
-    down: params.down || '',
-    hopInterval: params['hop-interval'] || params.hopInterval || '',
+    fingerprint: firstNonEmpty(params.fingerprint, params.fp),
+    allowInsecure: parseBool(
+      firstNonEmpty(params.insecure, params.allowInsecure, params['skip-cert-verify'], params.skipCertVerify),
+    ),
+    up: firstNonEmpty(params.up, params.upmbps),
+    down: firstNonEmpty(params.down, params.downmbps),
+    hopInterval: firstNonEmpty(
+      params['hop-interval'],
+      params.hopInterval,
+      params.hop_interval,
+      params.mportHopInt,
+    ),
   };
 }
 
@@ -217,6 +225,16 @@ function decodeComponentSafe(value) {
   }
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) {
+      return text;
+    }
+  }
+  return '';
+}
+
 function parseRawLinks(input) {
   const lines = String(input || '')
     .split(/\r?\n/)
@@ -225,19 +243,20 @@ function parseRawLinks(input) {
 
   const result = [];
   for (const line of lines) {
-    if (line.startsWith('vmess://')) {
+    const lower = line.toLowerCase();
+    if (lower.startsWith('vmess://')) {
       result.push(parseVmess(line));
       continue;
     }
-    if (line.startsWith('vless://')) {
+    if (lower.startsWith('vless://')) {
       result.push(parseUrlLike(line, 'vless'));
       continue;
     }
-    if (line.startsWith('trojan://')) {
+    if (lower.startsWith('trojan://')) {
       result.push(parseUrlLike(line, 'trojan'));
       continue;
     }
-    if (line.startsWith('hysteria2://') || line.startsWith('hy2://')) {
+    if (lower.startsWith('hysteria2://') || lower.startsWith('hy2://')) {
       result.push(parseHysteria2(line));
       continue;
     }
@@ -636,18 +655,25 @@ async function handleGenerate(request, env, url) {
     return json({ ok: false, error: '请求体不是合法 JSON' }, 400);
   }
 
-  const baseNodes = parseRawLinks(body.nodeLinks || '');
-  const preferredEndpoints = parsePreferredEndpoints(body.preferredIps || '');
-
-  if (!baseNodes.length) return json({ ok: false, error: '没有识别到可用节点' }, 400);
-  if (!preferredEndpoints.length) return json({ ok: false, error: '没有识别到可用优选地址' }, 400);
-
   const options = {
     namePrefix: body.namePrefix || '',
     keepOriginalHost: body.keepOriginalHost !== false,
   };
 
-  const nodes = buildNodes(baseNodes, preferredEndpoints, options);
+  let baseNodes;
+  let preferredEndpoints;
+  let nodes;
+  try {
+    baseNodes = parseRawLinks(body.nodeLinks || '');
+    preferredEndpoints = parsePreferredEndpoints(body.preferredIps || '');
+
+    if (!baseNodes.length) return json({ ok: false, error: '没有识别到可用节点' }, 400);
+    if (!preferredEndpoints.length) return json({ ok: false, error: '没有识别到可用优选地址' }, 400);
+
+    nodes = buildNodes(baseNodes, preferredEndpoints, options);
+  } catch (error) {
+    return json({ ok: false, error: error.message || '节点或优选地址解析失败' }, 400);
+  }
 
   const payload = {
     version: 1,
@@ -763,7 +789,11 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/generate') {
-      return handleGenerate(request, env, url);
+      try {
+        return await handleGenerate(request, env, url);
+      } catch (error) {
+        return json({ ok: false, error: error.message || '生成订阅失败' }, 500);
+      }
     }
 
     if (request.method === 'GET' && url.pathname.startsWith('/sub/')) {

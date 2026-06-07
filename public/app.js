@@ -57,7 +57,15 @@ form.addEventListener('submit', async (event) => {
       body: JSON.stringify(payload),
     });
 
-    const data = await response.json();
+    const responseText = await response.text();
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      const snippet = responseText.replace(/\s+/g, ' ').slice(0, 120);
+      throw new Error(`接口返回非 JSON（HTTP ${response.status}）：${snippet || '空响应'}`);
+    }
+
     if (!response.ok || !data.ok) {
       throw new Error(data.error || '生成失败');
     }
