@@ -396,11 +396,14 @@ export function renderHysteria2Uri(node) {
   setQueryParam(params, 'alpn', node.alpn?.length ? node.alpn.join(',') : '');
   setQueryParam(params, 'obfs', node.obfs || '');
   setQueryParam(params, 'obfs-password', node.obfsPassword || '');
-  setQueryParam(params, 'pinSHA256', node.pinSHA256 || '');
+  setQueryParam(params, 'pinSHA256', getCertificateFingerprint(node));
+  setQueryParam(params, 'fp', getClientFingerprint(node));
   setQueryParam(params, 'up', node.up || '');
   setQueryParam(params, 'down', node.down || '');
   setQueryParam(params, 'hop-interval', node.hopInterval || '');
   params.delete('ports');
+  params.delete('fingerprint');
+  params.delete('client-fingerprint');
 
   if (node.allowInsecure) {
     params.set('insecure', '1');
@@ -597,7 +600,8 @@ function parseHysteria2Uri(uri) {
     obfs: firstNonEmpty(params.obfs),
     obfsPassword: firstNonEmpty(params['obfs-password'], params.obfsPassword, params.obfs_password),
     pinSHA256: String(params.pinSHA256 || '').trim(),
-    fingerprint: firstNonEmpty(params.fingerprint, params.fp),
+    fingerprint: firstNonEmpty(params.fingerprint),
+    fp: firstNonEmpty(params.fp, params['client-fingerprint'], params.clientFingerprint),
     allowInsecure: toBoolean(
       firstNonEmpty(params.insecure, params.allowInsecure, params['skip-cert-verify'], params.skipCertVerify),
     ),
@@ -756,8 +760,13 @@ function renderClashProxy(node) {
     if (node.alpn?.length) {
       lines.push(`    alpn: [${node.alpn.map(yamlQuote).join(', ')}]`);
     }
-    if (node.pinSHA256 || node.fingerprint) {
-      lines.push(`    fingerprint: ${yamlQuote(node.pinSHA256 || node.fingerprint)}`);
+    const certificateFingerprint = getCertificateFingerprint(node);
+    const clientFingerprint = getClientFingerprint(node);
+    if (certificateFingerprint) {
+      lines.push(`    fingerprint: ${yamlQuote(certificateFingerprint)}`);
+    }
+    if (clientFingerprint) {
+      lines.push(`    client-fingerprint: ${yamlQuote(clientFingerprint)}`);
     }
     lines.push(`    skip-cert-verify: ${node.allowInsecure ? 'true' : 'false'}`);
     return lines;
@@ -893,6 +902,38 @@ function firstNonEmpty(...values) {
     }
   }
   return '';
+}
+
+function getCertificateFingerprint(node) {
+  const pin = firstNonEmpty(node.pinSHA256);
+  if (pin) {
+    return pin;
+  }
+
+  const candidate = firstNonEmpty(node.fingerprint);
+  return isCertificateFingerprint(candidate) ? candidate : '';
+}
+
+function getClientFingerprint(node) {
+  const clientFingerprint = firstNonEmpty(node.fp, node.clientFingerprint);
+  if (clientFingerprint) {
+    return clientFingerprint;
+  }
+
+  const candidate = firstNonEmpty(node.fingerprint);
+  return candidate && !isCertificateFingerprint(candidate) ? candidate : '';
+}
+
+function isCertificateFingerprint(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return false;
+  }
+  const compactHex = text.replace(/[:-]/g, '');
+  if (/^[0-9a-f]{32,}$/i.test(compactHex)) {
+    return true;
+  }
+  return /^[A-Za-z0-9+/=_-]{40,}$/.test(text);
 }
 
 function normalizePort(value, fallback) {

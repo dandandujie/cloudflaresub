@@ -13,7 +13,8 @@ import {
 
 const vmess = 'vmess://ewogICJ2IjogIjIiLAogICJwcyI6ICJkZW1vLXdzLXRscyIsCiAgImFkZCI6ICJlZGdlLmV4YW1wbGUuY29tIiwKICAicG9ydCI6ICI0NDMiLAogICJpZCI6ICIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLAogICJzY3kiOiAiYXV0byIsCiAgIm5ldCI6ICJ3cyIsCiAgInRscyI6ICJ0bHMiLAogICJwYXRoIjogIi93cyIsCiAgImhvc3QiOiAiZWRnZS5leGFtcGxlLmNvbSIsCiAgInNuaSI6ICJlZGdlLmV4YW1wbGUuY29tIiwKICAiZnAiOiAiY2hyb21lIiwKICAiYWxwbiI6ICJoMixodHRwLzEuMSIKfQ==';
 const hysteria2 = 'hysteria2://demo%3Apass@hy.example.com:443?sni=hy.example.com&insecure=1&obfs=salamander&obfs-password=obfs-secret&alpn=h3#demo-hy2';
-const hysteria2QueryAuth = 'hy2://hy.example.com:443?auth=demo%3Apass&peer=hy.example.com&skip-cert-verify=true&obfs=salamander&obfs_password=obfs-secret&mport=443-8443#query-auth';
+const hysteria2QueryAuth = 'hy2://hy.example.com:443?auth=demo%3Apass&peer=hy.example.com&skip-cert-verify=true&obfs=salamander&obfs_password=obfs-secret&mport=443-8443&fp=chrome#query-auth';
+const hysteria2FingerprintClient = 'hy2://demo%3Apass@hy.example.com:443?sni=hy.example.com&fingerprint=chrome#client-fp';
 
 const { nodes } = parseNodeLinks(vmess);
 assert.equal(nodes.length, 1);
@@ -57,6 +58,12 @@ assert.equal(hy2QueryAuthNodes[0].password, 'demo:pass');
 assert.equal(hy2QueryAuthNodes[0].sni, 'hy.example.com');
 assert.equal(hy2QueryAuthNodes[0].allowInsecure, true);
 assert.equal(hy2QueryAuthNodes[0].ports, '443-8443');
+assert.equal(hy2QueryAuthNodes[0].fp, 'chrome');
+
+const { nodes: hy2FingerprintClientNodes } = parseNodeLinks(hysteria2FingerprintClient);
+const hy2FingerprintClientClash = renderClashSubscription(hy2FingerprintClientNodes);
+assert.match(hy2FingerprintClientClash, /client-fingerprint: "chrome"/);
+assert.doesNotMatch(hy2FingerprintClientClash, /^    fingerprint: "chrome"/m);
 
 const hy2Expanded = expandNodes(hy2Nodes, endpoints, { keepOriginalHost: true, namePrefix: 'CF' });
 assert.equal(hy2Expanded.nodes.length, 2);
@@ -106,6 +113,11 @@ const generatePayload = await generateResponse.json();
 assert.equal(generateResponse.status, 200);
 assert.equal(generatePayload.ok, true);
 assert.equal(generatePayload.preview[0].type, 'hysteria2');
+
+const workerClashResponse = await worker.fetch(new Request(generatePayload.urls.clash), env);
+const workerClash = await workerClashResponse.text();
+assert.match(workerClash, /client-fingerprint: "chrome"/);
+assert.doesNotMatch(workerClash, /^    fingerprint: "chrome"/m);
 
 const badGenerateResponse = await worker.fetch(
   new Request('https://sub.example.com/api/generate', {

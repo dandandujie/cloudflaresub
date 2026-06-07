@@ -152,7 +152,8 @@ function parseHysteria2(link) {
     obfs: firstNonEmpty(params.obfs),
     obfsPassword: firstNonEmpty(params['obfs-password'], params.obfsPassword, params.obfs_password),
     pinSHA256: params.pinSHA256 || '',
-    fingerprint: firstNonEmpty(params.fingerprint, params.fp),
+    fingerprint: firstNonEmpty(params.fingerprint),
+    fp: firstNonEmpty(params.fp, params['client-fingerprint'], params.clientFingerprint),
     allowInsecure: parseBool(
       firstNonEmpty(params.insecure, params.allowInsecure, params['skip-cert-verify'], params.skipCertVerify),
     ),
@@ -242,6 +243,38 @@ function firstNonEmpty(...values) {
     }
   }
   return '';
+}
+
+function getCertificateFingerprint(node) {
+  const pin = firstNonEmpty(node.pinSHA256);
+  if (pin) {
+    return pin;
+  }
+
+  const candidate = firstNonEmpty(node.fingerprint);
+  return isCertificateFingerprint(candidate) ? candidate : '';
+}
+
+function getClientFingerprint(node) {
+  const clientFingerprint = firstNonEmpty(node.fp, node.clientFingerprint);
+  if (clientFingerprint) {
+    return clientFingerprint;
+  }
+
+  const candidate = firstNonEmpty(node.fingerprint);
+  return candidate && !isCertificateFingerprint(candidate) ? candidate : '';
+}
+
+function isCertificateFingerprint(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return false;
+  }
+  const compactHex = text.replace(/[:-]/g, '');
+  if (/^[0-9a-f]{32,}$/i.test(compactHex)) {
+    return true;
+  }
+  return /^[A-Za-z0-9+/=_-]{40,}$/.test(text);
 }
 
 function parseRawLinks(input) {
@@ -361,7 +394,10 @@ function encodeHysteria2(node) {
   if (node.obfs) params.set('obfs', node.obfs);
   if (node.obfsPassword) params.set('obfs-password', node.obfsPassword);
   if (node.alpn) params.set('alpn', node.alpn);
-  if (node.pinSHA256) params.set('pinSHA256', node.pinSHA256);
+  const certificateFingerprint = getCertificateFingerprint(node);
+  const clientFingerprint = getClientFingerprint(node);
+  if (certificateFingerprint) params.set('pinSHA256', certificateFingerprint);
+  if (clientFingerprint) params.set('fp', clientFingerprint);
   if (node.up) params.set('up', node.up);
   if (node.down) params.set('down', node.down);
   if (node.hopInterval) params.set('hop-interval', node.hopInterval);
@@ -525,8 +561,13 @@ function renderClash(nodes) {
             lines.push(`    alpn: [${alpn.map((item) => `"${escapeYaml(item)}"`).join(', ')}]`);
           }
         }
-        if (node.pinSHA256 || node.fingerprint) {
-          lines.push(`    fingerprint: "${escapeYaml(node.pinSHA256 || node.fingerprint)}"`);
+        const certificateFingerprint = getCertificateFingerprint(node);
+        const clientFingerprint = getClientFingerprint(node);
+        if (certificateFingerprint) {
+          lines.push(`    fingerprint: "${escapeYaml(certificateFingerprint)}"`);
+        }
+        if (clientFingerprint) {
+          lines.push(`    client-fingerprint: "${escapeYaml(clientFingerprint)}"`);
         }
         lines.push(`    skip-cert-verify: ${node.allowInsecure ? 'true' : 'false'}`);
 
