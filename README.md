@@ -15,7 +15,7 @@
 
 ## 功能特性
 
-- 支持 `vmess`、`vless`、`trojan` 节点解析
+- 支持 `vmess`、`vless`、`trojan`、`hysteria2` 节点解析
 - 支持 Base64 订阅文本自动展开
 - 支持 `host[:port][#remark]` 格式的优选地址
 - 结果写入 Workers KV，生成 `/sub/:id` 短链
@@ -118,7 +118,7 @@ cloudflaresub/
 
 ```json
 {
-  "nodeLinks": "vmess://...\nvless://...",
+  "nodeLinks": "vmess://...\nvless://...\nhysteria2://...",
   "preferredIps": "104.16.1.2#HK\n104.17.2.3:2053#US",
   "namePrefix": "CF",
   "keepOriginalHost": true

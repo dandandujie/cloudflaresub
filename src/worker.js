@@ -100,6 +100,123 @@ function parseUrlLike(link, type) {
   };
 }
 
+function parseHysteria2(link) {
+  const schemeEnd = link.indexOf('://');
+  const body = link.slice(schemeEnd + 3).trim();
+  const hashIndex = body.indexOf('#');
+  const bodyWithoutHash = hashIndex >= 0 ? body.slice(0, hashIndex) : body;
+  const hash = hashIndex >= 0 ? body.slice(hashIndex + 1) : '';
+  const queryIndex = bodyWithoutHash.indexOf('?');
+  const authorityAndPath = queryIndex >= 0 ? bodyWithoutHash.slice(0, queryIndex) : bodyWithoutHash;
+  const queryText = queryIndex >= 0 ? bodyWithoutHash.slice(queryIndex + 1) : '';
+  const authority = authorityAndPath.split('/')[0];
+  const atIndex = authority.lastIndexOf('@');
+
+  if (atIndex < 0) {
+    throw new Error('Hysteria2 链接缺少认证密码');
+  }
+
+  const password = decodeComponentSafe(authority.slice(0, atIndex)).trim();
+  const { host: server, portText } = splitHysteria2HostAndPort(authority.slice(atIndex + 1));
+  const { port, ports } = normalizeHysteria2Port(portText);
+  const params = Object.fromEntries(new URLSearchParams(queryText).entries());
+  const paramsPorts = String(params.ports || '').trim();
+
+  if (!server || !password) {
+    throw new Error('Hysteria2 链接缺少主机或认证密码');
+  }
+
+  return {
+    type: 'hysteria2',
+    name: decodeComponentSafe(hash) || 'hysteria2',
+    server,
+    port,
+    ports: paramsPorts || ports,
+    password,
+    network: 'udp',
+    tls: true,
+    host: '',
+    path: '',
+    sni: params.sni || '',
+    alpn: params.alpn || '',
+    obfs: params.obfs || '',
+    obfsPassword: params['obfs-password'] || params.obfsPassword || '',
+    pinSHA256: params.pinSHA256 || '',
+    fingerprint: params.fingerprint || '',
+    allowInsecure: parseBool(params.insecure || params.allowInsecure),
+    up: params.up || '',
+    down: params.down || '',
+    hopInterval: params['hop-interval'] || params.hopInterval || '',
+  };
+}
+
+function splitHysteria2HostAndPort(input) {
+  const value = String(input || '').trim();
+  if (!value) {
+    return { host: '', portText: '' };
+  }
+
+  if (value.startsWith('[')) {
+    const match = value.match(/^\[([^\]]+)](?::(.+))?$/);
+    if (!match) {
+      throw new Error(`Hysteria2 IPv6 地址格式错误：${value}`);
+    }
+    return { host: match[1], portText: match[2] || '' };
+  }
+
+  const colonCount = (value.match(/:/g) || []).length;
+  if (colonCount > 1) {
+    return { host: value, portText: '' };
+  }
+
+  const separator = value.lastIndexOf(':');
+  if (separator >= 0) {
+    return {
+      host: value.slice(0, separator),
+      portText: value.slice(separator + 1),
+    };
+  }
+
+  return { host: value, portText: '' };
+}
+
+function normalizeHysteria2Port(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return { port: 443, ports: '' };
+  }
+  if (/^\d+$/.test(text)) {
+    return { port: normalizePortNumber(text), ports: '' };
+  }
+
+  const firstPort = text.match(/\d+/)?.[0];
+  if (!firstPort) {
+    throw new Error(`Hysteria2 端口无效：${value}`);
+  }
+  return { port: normalizePortNumber(firstPort), ports: text };
+}
+
+function normalizePortNumber(value) {
+  const port = Number.parseInt(String(value || ''), 10);
+  if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+    return port;
+  }
+  throw new Error(`Hysteria2 端口无效：${value}`);
+}
+
+function parseBool(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return text === '1' || text === 'true' || text === 'yes';
+}
+
+function decodeComponentSafe(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function parseRawLinks(input) {
   const lines = String(input || '')
     .split(/\r?\n/)
@@ -120,9 +237,13 @@ function parseRawLinks(input) {
       result.push(parseUrlLike(line, 'trojan'));
       continue;
     }
+    if (line.startsWith('hysteria2://') || line.startsWith('hy2://')) {
+      result.push(parseHysteria2(line));
+      continue;
+    }
     try {
       const decoded = b64DecodeUtf8(line);
-      if (/^(vmess|vless|trojan):\/\//m.test(decoded)) {
+      if (/^(vmess|vless|trojan|hysteria2|hy2):\/\//m.test(decoded)) {
         result.push(...parseRawLinks(decoded));
       }
     } catch {}
@@ -142,13 +263,15 @@ function buildNodes(baseNodes, preferredEndpoints, options = {}) {
       if (prefix) nameParts.push(prefix);
       if (ep.remark) nameParts.push(ep.remark);
       else nameParts.push(String(counter));
+      const sni = node.sni || (node.type === 'hysteria2' ? node.server : '');
       output.push({
         ...node,
         name: nameParts.join(' | '),
         server: ep.server,
         port: ep.port || node.port,
         host: options.keepOriginalHost ? node.host : '',
-        sni: options.keepOriginalHost ? node.sni : '',
+        sni: options.keepOriginalHost ? sni : '',
+        ports: ep.port && node.type === 'hysteria2' ? '' : node.ports,
       });
     }
   }
@@ -203,12 +326,36 @@ function encodeTrojan(node) {
   return url.toString();
 }
 
+function encodeHysteria2(node) {
+  const params = new URLSearchParams();
+  if (node.sni) params.set('sni', node.sni);
+  if (node.allowInsecure) params.set('insecure', '1');
+  if (node.obfs) params.set('obfs', node.obfs);
+  if (node.obfsPassword) params.set('obfs-password', node.obfsPassword);
+  if (node.alpn) params.set('alpn', node.alpn);
+  if (node.pinSHA256) params.set('pinSHA256', node.pinSHA256);
+  if (node.up) params.set('up', node.up);
+  if (node.down) params.set('down', node.down);
+  if (node.hopInterval) params.set('hop-interval', node.hopInterval);
+
+  const portPart = node.ports || node.port;
+  const query = params.toString();
+  const hash = node.name ? `#${encodeURIComponent(node.name)}` : '';
+  return `hysteria2://${encodeURIComponent(node.password)}@${formatHostForUrl(node.server)}:${portPart}${query ? `?${query}` : ''}${hash}`;
+}
+
+function formatHostForUrl(host) {
+  const value = String(host || '');
+  return value.includes(':') && !value.startsWith('[') ? `[${value}]` : value;
+}
+
 function renderRaw(nodes) {
   const lines = nodes
     .map((node) => {
       if (node.type === 'vmess') return encodeVmess(node);
       if (node.type === 'vless') return encodeVless(node);
       if (node.type === 'trojan') return encodeTrojan(node);
+      if (node.type === 'hysteria2') return encodeHysteria2(node);
       return '';
     })
     .filter(Boolean);
@@ -306,6 +453,54 @@ function renderClash(nodes) {
             `        Host: "${escapeYaml(node.host || node.sni || '')}"`
           );
         }
+
+        return lines.join('\n');
+      }
+
+      if (node.type === 'hysteria2') {
+        const lines = [
+          `  - name: "${escapeYaml(node.name)}"`,
+          `    type: hysteria2`,
+          `    server: "${escapeYaml(node.server)}"`,
+          `    port: ${node.port}`,
+          `    password: "${escapeYaml(node.password || '')}"`,
+          `    udp: true`,
+        ];
+
+        if (node.ports) {
+          lines.push(`    ports: "${escapeYaml(node.ports)}"`);
+        }
+        if (node.up) {
+          lines.push(`    up: "${escapeYaml(node.up)}"`);
+        }
+        if (node.down) {
+          lines.push(`    down: "${escapeYaml(node.down)}"`);
+        }
+        if (node.hopInterval) {
+          lines.push(`    hop-interval: "${escapeYaml(node.hopInterval)}"`);
+        }
+        if (node.obfs) {
+          lines.push(`    obfs: "${escapeYaml(node.obfs)}"`);
+        }
+        if (node.obfsPassword) {
+          lines.push(`    obfs-password: "${escapeYaml(node.obfsPassword)}"`);
+        }
+        if (node.sni) {
+          lines.push(`    sni: "${escapeYaml(node.sni)}"`);
+        }
+        if (node.alpn) {
+          const alpn = String(node.alpn)
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean);
+          if (alpn.length) {
+            lines.push(`    alpn: [${alpn.map((item) => `"${escapeYaml(item)}"`).join(', ')}]`);
+          }
+        }
+        if (node.pinSHA256 || node.fingerprint) {
+          lines.push(`    fingerprint: "${escapeYaml(node.pinSHA256 || node.fingerprint)}"`);
+        }
+        lines.push(`    skip-cert-verify: ${node.allowInsecure ? 'true' : 'false'}`);
 
         return lines.join('\n');
       }

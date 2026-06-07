@@ -3,7 +3,7 @@ const textDecoder = new TextDecoder();
 
 const DEFAULT_TEST_URL = 'http://cp.cloudflare.com/generate_204';
 
-export const SUPPORTED_PROTOCOLS = ['vmess', 'vless', 'trojan'];
+export const SUPPORTED_PROTOCOLS = ['vmess', 'vless', 'trojan', 'hysteria2', 'hy2'];
 
 export function normalizeText(value = '') {
   return String(value).replace(/\r\n?/g, '\n').trim();
@@ -91,7 +91,7 @@ export function parseNodeLinks(inputText) {
     .filter(Boolean);
 
   if (!lines.length) {
-    throw new Error('请至少粘贴 1 个 vmess:// / vless:// / trojan:// 节点链接。');
+    throw new Error('请至少粘贴 1 个 vmess:// / vless:// / trojan:// / hysteria2:// 节点链接。');
   }
 
   const nodes = [];
@@ -162,6 +162,9 @@ export function expandNodes(baseNodes, endpoints, options = {}) {
       const clone = deepClone(baseNode);
       clone.server = endpoint.host;
       clone.port = port;
+      if (endpoint.port && clone.type === 'hysteria2') {
+        clone.ports = '';
+      }
       clone.name = buildNodeName(baseNode.name, suffix);
       clone.endpointLabel = endpoint.label || '';
       clone.endpointSource = `${endpoint.host}:${port}`;
@@ -317,6 +320,8 @@ export function renderNodeUri(node) {
       return renderVlessUri(node);
     case 'trojan':
       return renderTrojanUri(node);
+    case 'hysteria2':
+      return renderHysteria2Uri(node);
     default:
       throw new Error(`未知节点类型：${node.type}`);
   }
@@ -385,6 +390,30 @@ export function renderTrojanUri(node) {
   return `trojan://${encodeURIComponent(node.password)}@${formatHostForUrl(node.server)}:${node.port}?${params.toString()}${hash}`;
 }
 
+export function renderHysteria2Uri(node) {
+  const params = new URLSearchParams(node.params || {});
+  setQueryParam(params, 'sni', node.sni || '');
+  setQueryParam(params, 'alpn', node.alpn?.length ? node.alpn.join(',') : '');
+  setQueryParam(params, 'obfs', node.obfs || '');
+  setQueryParam(params, 'obfs-password', node.obfsPassword || '');
+  setQueryParam(params, 'pinSHA256', node.pinSHA256 || '');
+  setQueryParam(params, 'up', node.up || '');
+  setQueryParam(params, 'down', node.down || '');
+  setQueryParam(params, 'hop-interval', node.hopInterval || '');
+  params.delete('ports');
+
+  if (node.allowInsecure) {
+    params.set('insecure', '1');
+  } else if (params.has('insecure')) {
+    params.set('insecure', '0');
+  }
+
+  const query = params.toString();
+  const hash = node.name ? `#${encodeURIComponent(node.name)}` : '';
+  const portPart = node.ports || node.port;
+  return `hysteria2://${encodeURIComponent(node.password)}@${formatHostForUrl(node.server)}:${portPart}${query ? `?${query}` : ''}${hash}`;
+}
+
 function maybeExpandRawSubscription(inputText) {
   const text = normalizeText(inputText);
   if (!text || text.includes('://')) {
@@ -415,7 +444,10 @@ function parseSingleNode(uri) {
   if (lower.startsWith('trojan://')) {
     return parseTrojanUri(uri);
   }
-  throw new Error('只支持 vmess://、vless://、trojan://');
+  if (lower.startsWith('hysteria2://') || lower.startsWith('hy2://')) {
+    return parseHysteria2Uri(uri);
+  }
+  throw new Error('只支持 vmess://、vless://、trojan://、hysteria2://');
 }
 
 function parseVmessUri(uri) {
@@ -521,6 +553,58 @@ function parseTrojanUri(uri) {
   };
 }
 
+function parseHysteria2Uri(uri) {
+  const schemeEnd = uri.indexOf('://');
+  const body = uri.slice(schemeEnd + 3).trim();
+  const hashIndex = body.indexOf('#');
+  const bodyWithoutHash = hashIndex >= 0 ? body.slice(0, hashIndex) : body;
+  const hash = hashIndex >= 0 ? body.slice(hashIndex) : '';
+  const queryIndex = bodyWithoutHash.indexOf('?');
+  const authorityAndPath = queryIndex >= 0 ? bodyWithoutHash.slice(0, queryIndex) : bodyWithoutHash;
+  const queryText = queryIndex >= 0 ? bodyWithoutHash.slice(queryIndex + 1) : '';
+  const authority = authorityAndPath.split('/')[0];
+  const atIndex = authority.lastIndexOf('@');
+
+  if (atIndex < 0) {
+    throw new Error('Hysteria2 链接缺少认证密码');
+  }
+
+  const password = decodeComponentSafe(authority.slice(0, atIndex)).trim();
+  const { host: server, portText } = splitHysteria2HostAndPort(authority.slice(atIndex + 1));
+  const { port, ports } = normalizeHysteria2Port(portText);
+  const params = Object.fromEntries(new URLSearchParams(queryText).entries());
+  const paramsPorts = String(params.ports || '').trim();
+
+  if (!server || !password) {
+    throw new Error('Hysteria2 链接缺少主机或认证密码');
+  }
+
+  return {
+    type: 'hysteria2',
+    name: decodeHashName(hash) || 'hysteria2',
+    server,
+    originalServer: server,
+    port,
+    ports: paramsPorts || ports,
+    password,
+    network: 'udp',
+    hostHeader: '',
+    sni: String(params.sni || '').trim(),
+    tls: true,
+    security: 'tls',
+    alpn: splitListValue(params.alpn),
+    obfs: String(params.obfs || '').trim(),
+    obfsPassword: String(params['obfs-password'] || params.obfsPassword || '').trim(),
+    pinSHA256: String(params.pinSHA256 || '').trim(),
+    fingerprint: String(params.fingerprint || '').trim(),
+    allowInsecure: toBoolean(params.insecure || params.allowInsecure),
+    up: String(params.up || '').trim(),
+    down: String(params.down || '').trim(),
+    hopInterval: String(params['hop-interval'] || params.hopInterval || '').trim(),
+    params,
+  };
+}
+
 function parseEndpoint(rawLine) {
   const raw = String(rawLine || '').trim();
   if (!raw) {
@@ -570,6 +654,52 @@ function splitHostAndPort(input) {
   return { host: value, port: undefined };
 }
 
+function splitHysteria2HostAndPort(input) {
+  const value = String(input || '').trim();
+  if (!value) {
+    return { host: '', portText: '' };
+  }
+
+  if (value.startsWith('[')) {
+    const match = value.match(/^\[([^\]]+)](?::(.+))?$/);
+    if (!match) {
+      throw new Error(`Hysteria2 IPv6 地址格式错误：${value}`);
+    }
+    return { host: match[1], portText: match[2] || '' };
+  }
+
+  const colonCount = (value.match(/:/g) || []).length;
+  if (colonCount > 1) {
+    return { host: value, portText: '' };
+  }
+
+  const separator = value.lastIndexOf(':');
+  if (separator >= 0) {
+    return {
+      host: value.slice(0, separator),
+      portText: value.slice(separator + 1),
+    };
+  }
+
+  return { host: value, portText: '' };
+}
+
+function normalizeHysteria2Port(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return { port: 443, ports: '' };
+  }
+  if (/^\d+$/.test(text)) {
+    return { port: normalizePort(text, 443), ports: '' };
+  }
+
+  const firstPort = text.match(/\d+/)?.[0];
+  if (!firstPort) {
+    throw new Error(`Hysteria2 端口无效：${value}`);
+  }
+  return { port: normalizePort(firstPort, 443), ports: text };
+}
+
 function renderClashProxy(node) {
   const lines = [`  - name: ${yamlQuote(node.name)}`, `    type: ${node.type}`];
   lines.push(`    server: ${yamlQuote(node.server)}`);
@@ -589,6 +719,40 @@ function renderClashProxy(node) {
   }
   if (node.type === 'trojan') {
     lines.push(`    password: ${yamlQuote(node.password)}`);
+  }
+
+  if (node.type === 'hysteria2') {
+    lines.push(`    password: ${yamlQuote(node.password)}`);
+    if (node.ports) {
+      lines.push(`    ports: ${yamlQuote(node.ports)}`);
+    }
+    if (node.up) {
+      lines.push(`    up: ${yamlQuote(node.up)}`);
+    }
+    if (node.down) {
+      lines.push(`    down: ${yamlQuote(node.down)}`);
+    }
+    if (node.hopInterval) {
+      lines.push(`    hop-interval: ${yamlQuote(node.hopInterval)}`);
+    }
+    if (node.obfs) {
+      lines.push(`    obfs: ${yamlQuote(node.obfs)}`);
+    }
+    if (node.obfsPassword) {
+      lines.push(`    obfs-password: ${yamlQuote(node.obfsPassword)}`);
+    }
+    const sni = getEffectiveTlsHost(node);
+    if (sni) {
+      lines.push(`    sni: ${yamlQuote(sni)}`);
+    }
+    if (node.alpn?.length) {
+      lines.push(`    alpn: [${node.alpn.map(yamlQuote).join(', ')}]`);
+    }
+    if (node.pinSHA256 || node.fingerprint) {
+      lines.push(`    fingerprint: ${yamlQuote(node.pinSHA256 || node.fingerprint)}`);
+    }
+    lines.push(`    skip-cert-verify: ${node.allowInsecure ? 'true' : 'false'}`);
+    return lines;
   }
 
   if (node.tls) {
@@ -685,7 +849,7 @@ function getEffectiveTlsHost(node) {
 }
 
 function isClashSupportedNode(node) {
-  return ['vmess', 'vless', 'trojan'].includes(node.type);
+  return ['vmess', 'vless', 'trojan', 'hysteria2'].includes(node.type);
 }
 
 function isTlsEnabled(value) {
@@ -702,6 +866,14 @@ function decodeHashName(hash) {
     return decodeURIComponent(raw);
   } catch {
     return raw;
+  }
+}
+
+function decodeComponentSafe(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
 }
 
