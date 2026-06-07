@@ -27,6 +27,15 @@ function text(body, status = 200, contentType = 'text/plain; charset=utf-8') {
   });
 }
 
+function getSubStore(env) {
+  if (!env?.SUB_STORE || typeof env.SUB_STORE.get !== 'function' || typeof env.SUB_STORE.put !== 'function') {
+    throw new Error(
+      '未绑定 KV Namespace：SUB_STORE。请在 Cloudflare Worker 的 Settings -> Bindings 中添加 KV namespace，变量名必须为 SUB_STORE，然后重新部署。',
+    );
+  }
+  return env.SUB_STORE;
+}
+
 function b64EncodeUtf8(str) {
   return btoa(unescape(encodeURIComponent(str)));
 }
@@ -611,10 +620,10 @@ function createShortId(length = 10) {
   return out;
 }
 
-async function createUniqueShortId(env, tries = 8) {
+async function createUniqueShortId(store, tries = 8) {
   for (let i = 0; i < tries; i++) {
     const id = createShortId(10);
-    const exists = await env.SUB_STORE.get(`sub:${id}`);
+    const exists = await store.get(`sub:${id}`);
     if (!exists) return id;
   }
   throw new Error('无法生成唯一短链接，请稍后再试');
@@ -654,6 +663,7 @@ async function handleGenerate(request, env, url) {
   } catch {
     return json({ ok: false, error: '请求体不是合法 JSON' }, 400);
   }
+  const subStore = getSubStore(env);
 
   const options = {
     namePrefix: body.namePrefix || '',
@@ -685,17 +695,17 @@ async function handleGenerate(request, env, url) {
   const dedupHash = await buildDedupHash(body);
   const dedupKey = `dedup:${dedupHash}`;
 
-  let id = await env.SUB_STORE.get(dedupKey);
+  let id = await subStore.get(dedupKey);
 
   if (!id) {
-    id = await createUniqueShortId(env);
+    id = await createUniqueShortId(subStore);
     const ttl = 60 * 60 * 24 * 7; // 7天
 
-    await env.SUB_STORE.put(`sub:${id}`, JSON.stringify(payload), {
+    await subStore.put(`sub:${id}`, JSON.stringify(payload), {
       expirationTtl: ttl,
     });
 
-    await env.SUB_STORE.put(dedupKey, id, {
+    await subStore.put(dedupKey, id, {
       expirationTtl: ttl,
     });
   }
@@ -748,13 +758,14 @@ function validateAccessToken(url, env) {
 }
 
 async function handleSub(url, env) {
+  const subStore = getSubStore(env);
   const tokenCheck = validateAccessToken(url, env);
   if (!tokenCheck.ok) return tokenCheck.response;
 
   const id = url.pathname.split('/').pop();
   if (!id) return text('missing id', 400);
 
-  const raw = await env.SUB_STORE.get(`sub:${id}`);
+  const raw = await subStore.get(`sub:${id}`);
   if (!raw) return text('not found', 404);
 
   const record = JSON.parse(raw);
@@ -797,7 +808,11 @@ export default {
     }
 
     if (request.method === 'GET' && url.pathname.startsWith('/sub/')) {
-      return handleSub(url, env);
+      try {
+        return await handleSub(url, env);
+      } catch (error) {
+        return text(error.message || '订阅读取失败', 500);
+      }
     }
 
     return env.ASSETS.fetch(request);

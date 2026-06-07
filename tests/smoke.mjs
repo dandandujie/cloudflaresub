@@ -124,6 +124,23 @@ assert.equal(badGenerateResponse.status, 400);
 assert.equal(badGeneratePayload.ok, false);
 assert.match(badGeneratePayload.error, /Hysteria2/);
 
+const missingKvResponse = await worker.fetch(
+  new Request('https://sub.example.com/api/generate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      nodeLinks: hysteria2,
+      preferredIps: '104.16.1.2#HK',
+      keepOriginalHost: true,
+    }),
+  }),
+  { SUB_ACCESS_TOKEN: 'token' },
+);
+const missingKvPayload = await missingKvResponse.json();
+assert.equal(missingKvResponse.status, 500);
+assert.equal(missingKvPayload.ok, false);
+assert.match(missingKvPayload.error, /SUB_STORE/);
+
 const secret = 'this-is-a-very-secret-key';
 const token = await encryptPayload({ nodes: expanded.nodes }, secret);
 const payload = await decryptPayload(token, secret);

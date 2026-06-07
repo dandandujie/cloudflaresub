@@ -174,6 +174,10 @@ curl "https://<worker>/sub/<id>?target=clash&token=<SUB_ACCESS_TOKEN>"
 - 每条订阅记录默认保存 7 天（TTL）
 - Surge 导出当前仅包含 `vmess` / `trojan`
 
+## 常见错误
+
+- `Cannot read properties of undefined (reading 'get')` 或提示缺少 `SUB_STORE`：说明 Worker 没有绑定 KV namespace。请在 Cloudflare Worker 的 `Settings` -> `Bindings` 中添加 KV namespace，变量名必须精确填写 `SUB_STORE`，保存后重新部署。
+
 ## License
 
 MIT
